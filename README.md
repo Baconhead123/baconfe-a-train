@@ -1,1 +1,1984 @@
-# baconfe-a-train
+--========================================================--
+-- 高速冲撞 / Can't Stop!
+-- 完整修复版
+--========================================================--
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local Player = Players.LocalPlayer
+
+--========================================================--
+-- 参数
+--========================================================--
+
+local HIGH_SPEED = 500
+local CHARGE_SPEED = 250
+
+local FIRST_SKILL_DURATION = 1
+local SECOND_SKILL_DURATION = 2
+
+local BEHIND_DISTANCE = 3
+local SKILL_ATTACH_DURATION = 0.5
+local CHARGE_ATTACH_DURATION = 0.5
+
+local NEAREST_TARGET_DISTANCE = 30
+
+--========================================================--
+-- 动画 ID
+--========================================================--
+
+-- 走路 + 跑步统一
+local MOVEMENT_ANIMATION_ID = 18897115785
+
+-- 走路 + 跑步统一 0.6x
+local MOVEMENT_ANIMATION_SPEED = 0.6
+
+-- 一技能触发
+local FIRST_SKILL_ANIMATION = 12273188754
+
+-- 一技能抓到人
+local FIRST_SKILL_GRAB_ANIMATION = 76530443909428
+
+-- 二技能触发
+local SECOND_SKILL_ANIMATION = 12296113986
+
+-- 二技能抓到人
+local SECOND_SKILL_GRAB_ANIMATION = 131820095363270
+
+-- 三技能使用
+local THIRD_SKILL_ANIMATION = 76530443909428
+
+-- 三技能抓到人
+local THIRD_SKILL_GRAB_ANIMATION = 76530443909428
+
+-- 高速冲撞
+local CHARGE_ANIMATION = 18897115785
+
+--========================================================--
+-- 二技能 Tool
+--========================================================--
+
+local SECOND_TOOL_NAMES = {
+    ["列车突进"] = true,
+}
+
+--========================================================--
+-- 角色
+--========================================================--
+
+local Character
+local Humanoid
+local Root
+
+local function setupCharacter(char)
+
+    Character = char
+
+    Humanoid =
+        char:WaitForChild("Humanoid")
+
+    Root =
+        char:WaitForChild("HumanoidRootPart")
+
+end
+
+setupCharacter(
+    Player.Character
+    or Player.CharacterAdded:Wait()
+)
+
+--========================================================--
+-- 通用动画加载
+--========================================================--
+
+local function loadAnimation(
+    animationId,
+    priority,
+    looped
+)
+
+    if not Humanoid then
+        return nil, nil
+    end
+
+    local animation =
+        Instance.new("Animation")
+
+    animation.AnimationId =
+        "rbxassetid://" ..
+        tostring(animationId)
+
+    local track
+
+    pcall(function()
+
+        track =
+            Humanoid:LoadAnimation(
+                animation
+            )
+
+    end)
+
+    if not track then
+
+        animation:Destroy()
+
+        return nil, nil
+
+    end
+
+    track.Priority =
+        priority
+        or Enum.AnimationPriority.Action
+
+    track.Looped =
+        looped or false
+
+    return animation, track
+
+end
+
+--========================================================--
+-- 移动动画
+--
+-- 重点：
+-- 1. WalkSpeed 16
+-- 2. WalkSpeed 24
+-- 3. WalkSpeed 25
+-- 4. 更高速度
+--
+-- 全部使用：
+-- 18897115785
+-- 0.6x
+--
+-- 同时处理默认 Animate 的 walk/run
+-- 防止跑步时被默认跑步动画覆盖
+--========================================================--
+
+local MovementAnimation
+local MovementTrack
+
+local MovementRunningConnection
+local MovementHeartbeatConnection
+
+local function disableDefaultMovementAnimations()
+
+    if not Character then
+        return
+    end
+
+    local Animate =
+        Character:FindFirstChild("Animate")
+
+    if not Animate then
+        return
+    end
+
+    --====================================================--
+    -- 禁用默认 walk/run 动画脚本控制
+    --====================================================--
+
+    local walk =
+        Animate:FindFirstChild("walk")
+
+    if walk then
+
+        local walkAnim =
+            walk:FindFirstChild("WalkAnim")
+
+        if walkAnim
+        and walkAnim:IsA("Animation") then
+
+            walkAnim.AnimationId =
+                "rbxassetid://" ..
+                tostring(MOVEMENT_ANIMATION_ID)
+
+        end
+
+    end
+
+    local run =
+        Animate:FindFirstChild("run")
+
+    if run then
+
+        local runAnim =
+            run:FindFirstChild("RunAnim")
+
+        if runAnim
+        and runAnim:IsA("Animation") then
+
+            runAnim.AnimationId =
+                "rbxassetid://" ..
+                tostring(MOVEMENT_ANIMATION_ID)
+
+        end
+
+    end
+
+end
+
+local function stopDefaultMovementTracks()
+
+    if not Humanoid then
+        return
+    end
+
+    for _, track in ipairs(
+        Humanoid:GetPlayingAnimationTracks()
+    ) do
+
+        if track ~= MovementTrack then
+
+            local priority =
+                track.Priority
+
+            if priority ==
+                Enum.AnimationPriority.Core
+            or priority ==
+                Enum.AnimationPriority.Idle
+            or priority ==
+                Enum.AnimationPriority.Movement then
+
+                local animation =
+                    track.Animation
+
+                if animation then
+
+                    local id =
+                        animation.AnimationId
+
+                    if id
+                    and id ~= "" then
+
+                        pcall(function()
+                            track:Stop(0.05)
+                        end)
+
+                    end
+
+                end
+
+            end
+
+        end
+
+    end
+
+end
+
+local function setupMovement()
+
+    --====================================================--
+    -- 清理
+    --====================================================--
+
+    if MovementRunningConnection then
+
+        MovementRunningConnection:Disconnect()
+
+        MovementRunningConnection = nil
+
+    end
+
+    if MovementHeartbeatConnection then
+
+        MovementHeartbeatConnection:Disconnect()
+
+        MovementHeartbeatConnection = nil
+
+    end
+
+    if MovementTrack then
+
+        pcall(function()
+
+            MovementTrack:Stop()
+
+        end)
+
+        MovementTrack = nil
+
+    end
+
+    if MovementAnimation then
+
+        MovementAnimation:Destroy()
+
+        MovementAnimation = nil
+
+    end
+
+    if not Humanoid then
+        return
+    end
+
+    --====================================================--
+    -- 设置 WalkSpeed
+    --====================================================--
+
+    local originalSpeed =
+        Humanoid.WalkSpeed
+
+    if originalSpeed <= 0 then
+        originalSpeed = 16
+    end
+
+    Humanoid.WalkSpeed =
+        originalSpeed * 1.5
+
+    --====================================================--
+    -- 修改默认 Animate
+    --====================================================--
+
+    task.defer(function()
+
+        disableDefaultMovementAnimations()
+
+    end)
+
+    --====================================================--
+    -- 创建自己的移动动画
+    --====================================================--
+
+    MovementAnimation =
+        Instance.new("Animation")
+
+    MovementAnimation.AnimationId =
+        "rbxassetid://" ..
+        tostring(
+            MOVEMENT_ANIMATION_ID
+        )
+
+    pcall(function()
+
+        MovementTrack =
+            Humanoid:LoadAnimation(
+                MovementAnimation
+            )
+
+    end)
+
+    if not MovementTrack then
+
+        warn(
+            "[Can't Stop!] 移动动画加载失败"
+        )
+
+        return
+
+    end
+
+    MovementTrack.Priority =
+        Enum.AnimationPriority.Movement
+
+    MovementTrack.Looped =
+        true
+
+    --====================================================--
+    -- Running
+    --====================================================--
+
+    MovementRunningConnection =
+        Humanoid.Running:Connect(
+            function(speed)
+
+                if not MovementTrack then
+                    return
+                end
+
+                if not Humanoid
+                or Humanoid.Health <= 0 then
+                    return
+                end
+
+                -- 只判断有没有速度
+                --
+                -- 16 = 播放
+                -- 24 = 播放
+                -- 25 = 播放
+                -- 30 = 播放
+                --
+                -- 全部0.6x
+
+                if speed > 0.1 then
+
+                    -- 防止默认动画抢回来
+                    stopDefaultMovementTracks()
+
+                    if not MovementTrack.IsPlaying then
+
+                        pcall(function()
+
+                            MovementTrack:Play(
+                                0.05,
+                                1,
+                                MOVEMENT_ANIMATION_SPEED
+                            )
+
+                        end)
+
+                    end
+
+                    pcall(function()
+
+                        MovementTrack:AdjustSpeed(
+                            MOVEMENT_ANIMATION_SPEED
+                        )
+
+                    end)
+
+                else
+
+                    if MovementTrack.IsPlaying then
+
+                        pcall(function()
+
+                            MovementTrack:Stop(
+                                0.08
+                            )
+
+                        end)
+
+                    end
+
+                end
+
+            end
+        )
+
+    --====================================================--
+    -- Heartbeat 保险
+    --====================================================--
+
+    MovementHeartbeatConnection =
+        RunService.Heartbeat:Connect(
+            function()
+
+                if not MovementTrack then
+                    return
+                end
+
+                if not Humanoid
+                or Humanoid.Health <= 0 then
+                    return
+                end
+
+                local moving =
+                    Humanoid.MoveDirection.Magnitude
+                    > 0.05
+
+                if moving then
+
+                    -- 持续阻止默认移动动画抢占
+                    stopDefaultMovementTracks()
+
+                    if not MovementTrack.IsPlaying then
+
+                        pcall(function()
+
+                            MovementTrack:Play(
+                                0.05,
+                                1,
+                                MOVEMENT_ANIMATION_SPEED
+                            )
+
+                        end)
+
+                    end
+
+                    pcall(function()
+
+                        MovementTrack:AdjustSpeed(
+                            MOVEMENT_ANIMATION_SPEED
+                        )
+
+                    end)
+
+                else
+
+                    if MovementTrack.IsPlaying then
+
+                        pcall(function()
+
+                            MovementTrack:Stop(
+                                0.08
+                            )
+
+                        end)
+
+                    end
+
+                end
+
+            end
+        )
+
+end
+
+--========================================================--
+-- 热栏
+--========================================================--
+
+local SkillNames = {
+
+    [1] = "高速冲拳",
+    [2] = "列车突进",
+    [3] = "高速抓取",
+    [4] = "终极冲撞"
+
+}
+
+local function updateHotbar()
+
+    local PlayerGui =
+        Player:FindFirstChild("PlayerGui")
+
+    if not PlayerGui then
+        return
+    end
+
+    local Hotbar =
+        PlayerGui:FindFirstChild("Hotbar")
+
+    if not Hotbar then
+        return
+    end
+
+    local Backpack =
+        Hotbar:FindFirstChild("Backpack")
+
+    if not Backpack then
+        return
+    end
+
+    local HotbarFrame =
+        Backpack:FindFirstChild("Hotbar")
+
+    if not HotbarFrame then
+        return
+    end
+
+    for i = 1, 4 do
+
+        local Button =
+            HotbarFrame:FindFirstChild(
+                tostring(i)
+            )
+
+        if Button then
+
+            local Base =
+                Button:FindFirstChild("Base")
+
+            if Base then
+
+                local ToolName =
+                    Base:FindFirstChild(
+                        "ToolName"
+                    )
+
+                if ToolName then
+
+                    ToolName.Text =
+                        SkillNames[i]
+
+                end
+
+            end
+
+        end
+
+    end
+
+end
+
+task.spawn(function()
+
+    while task.wait(0.5) do
+
+        pcall(updateHotbar)
+
+    end
+
+end)
+
+--========================================================--
+-- 残影
+--========================================================--
+
+local function createAfterImage()
+
+    if not Character
+    or not Character.Parent then
+        return
+    end
+
+    local oldArchivable =
+        Character.Archivable
+
+    Character.Archivable = true
+
+    local clone
+
+    pcall(function()
+
+        clone =
+            Character:Clone()
+
+    end)
+
+    Character.Archivable =
+        oldArchivable
+
+    if not clone then
+        return
+    end
+
+    for _, obj in ipairs(
+        clone:GetDescendants()
+    ) do
+
+        if obj:IsA("Script")
+        or obj:IsA("LocalScript")
+        or obj:IsA("ModuleScript")
+        or obj:IsA("Humanoid") then
+
+            obj:Destroy()
+
+        elseif obj:IsA("BasePart") then
+
+            obj.Anchored = true
+            obj.CanCollide = false
+            obj.CanTouch = false
+            obj.CanQuery = false
+
+            obj.Transparency =
+                math.max(
+                    obj.Transparency,
+                    0.7
+                )
+
+        elseif obj:IsA("Decal") then
+
+            obj.Transparency = 0.7
+
+        end
+
+    end
+
+    clone.Name =
+        "HighSpeedAfterImage"
+
+    clone.Parent =
+        workspace
+
+    task.delay(
+        0.12,
+        function()
+
+            if clone
+            and clone.Parent then
+
+                clone:Destroy()
+
+            end
+
+        end
+    )
+
+end
+
+--========================================================--
+-- 从部件寻找 Humanoid
+--========================================================--
+
+local function findHumanoidFromPart(part)
+
+    if not part then
+        return nil
+    end
+
+    local model =
+        part:FindFirstAncestorOfClass(
+            "Model"
+        )
+
+    if not model then
+        return nil
+    end
+
+    local hum =
+        model:FindFirstChildOfClass(
+            "Humanoid"
+        )
+
+    if hum
+    and hum.Health > 0
+    and model ~= Character then
+
+        return hum
+
+    end
+
+    return nil
+
+end
+
+--========================================================--
+-- 前方目标
+--========================================================--
+
+local function detectTarget()
+
+    if not Root
+    or not Root.Parent then
+        return nil
+    end
+
+    local params =
+        RaycastParams.new()
+
+    params.FilterType =
+        Enum.RaycastFilterType.Exclude
+
+    params.FilterDescendantsInstances = {
+        Character
+    }
+
+    params.IgnoreWater = true
+
+    local result =
+        workspace:Raycast(
+            Root.Position,
+            Root.CFrame.LookVector * 7,
+            params
+        )
+
+    if result then
+
+        return findHumanoidFromPart(
+            result.Instance
+        )
+
+    end
+
+    return nil
+
+end
+
+--========================================================--
+-- 摄像机方向
+--========================================================--
+
+local function getCameraDirection()
+
+    local Camera =
+        workspace.CurrentCamera
+
+    if not Camera then
+        return nil
+    end
+
+    local look =
+        Camera.CFrame.LookVector
+
+    local horizontal =
+        Vector3.new(
+            look.X,
+            0,
+            look.Z
+        )
+
+    if horizontal.Magnitude <= 0.001 then
+        return nil
+    end
+
+    return horizontal.Unit
+
+end
+
+--========================================================--
+-- 最近目标
+--========================================================--
+
+local function findNearestLivingTarget()
+
+    if not Root
+    or not Root.Parent then
+        return nil
+    end
+
+    local nearestHumanoid
+    local nearestDistance =
+        NEAREST_TARGET_DISTANCE
+
+    -- 玩家
+    for _, otherPlayer in ipairs(
+        Players:GetPlayers()
+    ) do
+
+        if otherPlayer ~= Player then
+
+            local otherCharacter =
+                otherPlayer.Character
+
+            if otherCharacter then
+
+                local otherHumanoid =
+                    otherCharacter:FindFirstChildOfClass(
+                        "Humanoid"
+                    )
+
+                local otherRoot =
+                    otherCharacter:FindFirstChild(
+                        "HumanoidRootPart"
+                    )
+
+                if otherHumanoid
+                and otherHumanoid.Health > 0
+                and otherRoot then
+
+                    local distance =
+                        (
+                            Root.Position
+                            - otherRoot.Position
+                        ).Magnitude
+
+                    if distance < nearestDistance then
+
+                        nearestDistance =
+                            distance
+
+                        nearestHumanoid =
+                            otherHumanoid
+
+                    end
+
+                end
+
+            end
+
+        end
+
+    end
+
+    -- NPC
+    for _, obj in ipairs(
+        workspace:GetDescendants()
+    ) do
+
+        if obj:IsA("Humanoid")
+        and obj ~= Humanoid
+        and obj.Health > 0 then
+
+            local model =
+                obj.Parent
+
+            if model
+            and model:IsA("Model")
+            and model ~= Character then
+
+                local otherRoot =
+                    model:FindFirstChild(
+                        "HumanoidRootPart"
+                    )
+
+                if otherRoot then
+
+                    local distance =
+                        (
+                            Root.Position
+                            - otherRoot.Position
+                        ).Magnitude
+
+                    if distance < nearestDistance then
+
+                        nearestDistance =
+                            distance
+
+                        nearestHumanoid =
+                            obj
+
+                    end
+
+                end
+
+            end
+
+        end
+
+    end
+
+    return nearestHumanoid
+
+end
+
+--========================================================--
+-- 固定目标
+--========================================================--
+
+local AttachConnection
+local IsAttached = false
+
+local function releaseBehindTarget()
+
+    IsAttached = false
+
+    if AttachConnection then
+
+        AttachConnection:Disconnect()
+        AttachConnection = nil
+
+    end
+
+end
+
+local function attachBehindTarget(
+    targetHumanoid,
+    duration
+)
+
+    if not targetHumanoid
+    or targetHumanoid.Health <= 0 then
+        return false
+    end
+
+    local targetCharacter =
+        targetHumanoid.Parent
+
+    if not targetCharacter then
+        return false
+    end
+
+    local targetRoot =
+        targetCharacter:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+    if not targetRoot then
+        return false
+    end
+
+    releaseBehindTarget()
+
+    IsAttached = true
+
+    local elapsed = 0
+
+    AttachConnection =
+        RunService.RenderStepped:Connect(
+            function(deltaTime)
+
+                if not IsAttached then
+                    return
+                end
+
+                if not Root
+                or not Root.Parent
+                or not targetRoot
+                or not targetRoot.Parent
+                or targetHumanoid.Health <= 0 then
+
+                    releaseBehindTarget()
+                    return
+
+                end
+
+                elapsed += deltaTime
+
+                local behindPosition =
+                    targetRoot.Position
+                    - targetRoot.CFrame.LookVector
+                    * BEHIND_DISTANCE
+
+                Root.CFrame =
+                    CFrame.lookAt(
+                        behindPosition,
+                        targetRoot.Position
+                    )
+
+                Root.AssemblyLinearVelocity =
+                    Vector3.zero
+
+                if elapsed >= duration then
+                    releaseBehindTarget()
+                end
+
+            end
+        )
+
+    return true
+
+end
+
+local function attachNearestForSkill()
+
+    local target =
+        findNearestLivingTarget()
+
+    if target then
+
+        attachBehindTarget(
+            target,
+            SKILL_ATTACH_DURATION
+        )
+
+        return target
+
+    end
+
+    return nil
+
+end
+
+--========================================================--
+-- 高速移动
+--========================================================--
+
+local HighSpeedRunning = false
+local HighSpeedConnection
+
+local function stopHighSpeed()
+
+    HighSpeedRunning = false
+
+    if HighSpeedConnection then
+
+        HighSpeedConnection:Disconnect()
+        HighSpeedConnection = nil
+
+    end
+
+    if Root
+    and Root.Parent
+    and not IsAttached then
+
+        local current =
+            Root.AssemblyLinearVelocity
+
+        Root.AssemblyLinearVelocity =
+            Vector3.new(
+                0,
+                current.Y,
+                0
+            )
+
+    end
+
+end
+
+local function startHighSpeed(duration)
+
+    if HighSpeedRunning then
+        return
+    end
+
+    if not Character
+    or not Humanoid
+    or not Root then
+        return
+    end
+
+    if Humanoid.Health <= 0 then
+        return
+    end
+
+    HighSpeedRunning = true
+
+    attachNearestForSkill()
+
+    local elapsed = 0
+
+    HighSpeedConnection =
+        RunService.RenderStepped:Connect(
+            function(deltaTime)
+
+                if not HighSpeedRunning then
+                    return
+                end
+
+                if not Root
+                or not Root.Parent
+                or not Humanoid
+                or Humanoid.Health <= 0 then
+
+                    stopHighSpeed()
+                    return
+
+                end
+
+                elapsed += deltaTime
+
+                if IsAttached then
+                    return
+                end
+
+                local direction =
+                    getCameraDirection()
+
+                if direction then
+
+                    Root.CFrame =
+                        CFrame.lookAt(
+                            Root.Position,
+                            Root.Position + direction
+                        )
+
+                    Root.AssemblyLinearVelocity =
+                        direction * HIGH_SPEED
+
+                end
+
+                if math.floor(elapsed * 25)
+                ~= math.floor(
+                    (elapsed - deltaTime) * 25
+                ) then
+
+                    createAfterImage()
+
+                end
+
+                if elapsed >= duration then
+                    stopHighSpeed()
+                end
+
+            end
+        )
+
+end
+
+--========================================================--
+-- 一技能抓到人动画
+--========================================================--
+
+local function playFirstSkillGrabAnimation()
+
+    local animation, track =
+        loadAnimation(
+            FIRST_SKILL_GRAB_ANIMATION,
+            Enum.AnimationPriority.Action,
+            false
+        )
+
+    if not track then
+        return
+    end
+
+    pcall(function()
+        track:Play()
+    end)
+
+    task.delay(
+        3,
+        function()
+
+            pcall(function()
+                track:Stop()
+            end)
+
+            animation:Destroy()
+
+        end
+    )
+
+end
+
+--========================================================--
+-- 二技能抓到人动画
+--========================================================--
+
+local function playSecondSkillGrabAnimation()
+
+    local animation, track =
+        loadAnimation(
+            SECOND_SKILL_GRAB_ANIMATION,
+            Enum.AnimationPriority.Action,
+            false
+        )
+
+    if not track then
+        return
+    end
+
+    pcall(function()
+        track:Play()
+    end)
+
+    task.delay(
+        3,
+        function()
+
+            pcall(function()
+                track:Stop()
+            end)
+
+            animation:Destroy()
+
+        end
+    )
+
+end
+
+--========================================================--
+-- 三技能使用动画
+--========================================================--
+
+local function playThirdSkillUseAnimation()
+
+    local animation, track =
+        loadAnimation(
+            THIRD_SKILL_ANIMATION,
+            Enum.AnimationPriority.Action,
+            false
+        )
+
+    if not track then
+        return
+    end
+
+    pcall(function()
+        track:Play()
+    end)
+
+    task.delay(
+        3,
+        function()
+
+            pcall(function()
+                track:Stop()
+            end)
+
+            animation:Destroy()
+
+        end
+    )
+
+end
+
+--========================================================--
+-- 三技能抓到人动画
+--========================================================--
+
+local function playThirdSkillGrabAnimation()
+
+    local animation, track =
+        loadAnimation(
+            THIRD_SKILL_GRAB_ANIMATION,
+            Enum.AnimationPriority.Action,
+            false
+        )
+
+    if not track then
+        return
+    end
+
+    pcall(function()
+        track:Play()
+    end)
+
+    task.delay(
+        3,
+        function()
+
+            pcall(function()
+                track:Stop()
+            end)
+
+            animation:Destroy()
+
+        end
+    )
+
+end
+
+--========================================================--
+-- 二技能
+--========================================================--
+
+local AnimationConnection
+
+local function setupSecondSkillAnimation()
+
+    if AnimationConnection then
+
+        AnimationConnection:Disconnect()
+        AnimationConnection = nil
+
+    end
+
+    if not Humanoid then
+        return
+    end
+
+    AnimationConnection =
+        Humanoid.AnimationPlayed:Connect(
+            function(animationTrack)
+
+                if not animationTrack
+                or not animationTrack.Animation then
+                    return
+                end
+
+                local id =
+                    animationTrack.Animation.AnimationId
+
+                if id ==
+                    "rbxassetid://" ..
+                    tostring(
+                        SECOND_SKILL_ANIMATION
+                    ) then
+
+                    pcall(function()
+                        animationTrack:Stop()
+                    end)
+
+                    task.spawn(function()
+
+                        local target =
+                            attachNearestForSkill()
+
+                        if target then
+
+                            -- 二技能抓到人
+                            playSecondSkillGrabAnimation()
+
+                        end
+
+                        task.wait(
+                            SKILL_ATTACH_DURATION
+                        )
+
+                        startHighSpeed(
+                            SECOND_SKILL_DURATION
+                        )
+
+                    end)
+
+                end
+
+            end
+        )
+
+end
+
+--========================================================--
+-- 一技能
+--========================================================--
+
+local FirstSkillConnection
+local FirstSkillDetected = false
+
+local function setupFirstSkill()
+
+    if FirstSkillConnection then
+
+        FirstSkillConnection:Disconnect()
+        FirstSkillConnection = nil
+
+    end
+
+    if not Humanoid then
+        return
+    end
+
+    FirstSkillConnection =
+        Humanoid.AnimationPlayed:Connect(
+            function(animationTrack)
+
+                if not animationTrack
+                or not animationTrack.Animation then
+                    return
+                end
+
+                local id =
+                    animationTrack.Animation.AnimationId
+
+                if id ~=
+                    "rbxassetid://" ..
+                    tostring(
+                        FIRST_SKILL_ANIMATION
+                    ) then
+                    return
+                end
+
+                if FirstSkillDetected then
+                    return
+                end
+
+                FirstSkillDetected = true
+
+                task.spawn(function()
+
+                    local timeout = 0
+
+                    while timeout < 0.8 do
+
+                        if not Humanoid
+                        or Humanoid.Health <= 0 then
+                            break
+                        end
+
+                        local target =
+                            detectTarget()
+
+                        if target then
+
+                            pcall(function()
+                                animationTrack:Stop()
+                            end)
+
+                            playFirstSkillGrabAnimation()
+
+                            startHighSpeed(
+                                FIRST_SKILL_DURATION
+                            )
+
+                            break
+
+                        end
+
+                        timeout += 0.03
+
+                        task.wait(0.03)
+
+                    end
+
+                    task.wait(0.2)
+
+                    FirstSkillDetected = false
+
+                end)
+
+            end
+        )
+
+end
+
+--========================================================--
+-- 三技能
+--========================================================--
+
+local ThirdSkillConnection
+local ThirdSkillDetected = false
+
+local function setupThirdSkill()
+
+    if ThirdSkillConnection then
+
+        ThirdSkillConnection:Disconnect()
+        ThirdSkillConnection = nil
+
+    end
+
+    if not Humanoid then
+        return
+    end
+
+    ThirdSkillConnection =
+        Humanoid.AnimationPlayed:Connect(
+            function(animationTrack)
+
+                if not animationTrack
+                or not animationTrack.Animation then
+                    return
+                end
+
+                local id =
+                    animationTrack.Animation.AnimationId
+
+                if id ~=
+                    "rbxassetid://" ..
+                    tostring(
+                        THIRD_SKILL_ANIMATION
+                    ) then
+                    return
+                end
+
+                if ThirdSkillDetected then
+                    return
+                end
+
+                ThirdSkillDetected = true
+
+                task.spawn(function()
+
+                    -- 三技能使用动画
+                    playThirdSkillUseAnimation()
+
+                    local target =
+                        attachNearestForSkill()
+
+                    if target then
+
+                        -- 三技能抓到人
+                        playThirdSkillGrabAnimation()
+
+                    end
+
+                    task.wait(
+                        SKILL_ATTACH_DURATION
+                    )
+
+                    ThirdSkillDetected = false
+
+                end)
+
+            end
+        )
+
+end
+
+--========================================================--
+-- 查找二技能 Tool
+--========================================================--
+
+local function findSecondTool()
+
+    local Backpack =
+        Player:FindFirstChild("Backpack")
+
+    if Backpack then
+
+        for _, item in ipairs(
+            Backpack:GetChildren()
+        ) do
+
+            if item:IsA("Tool")
+            and SECOND_TOOL_NAMES[item.Name] then
+
+                return item
+
+            end
+
+        end
+
+    end
+
+    if Character then
+
+        for _, item in ipairs(
+            Character:GetChildren()
+        ) do
+
+            if item:IsA("Tool")
+            and SECOND_TOOL_NAMES[item.Name] then
+
+                return item
+
+            end
+
+        end
+
+    end
+
+    return nil
+
+end
+
+--========================================================--
+-- 只触发二技能
+--========================================================--
+
+local function activateSecondTool()
+
+    local secondTool =
+        findSecondTool()
+
+    if not secondTool then
+
+        warn(
+            "[Can't Stop!] 找不到二技能 Tool：列车突进"
+        )
+
+        return false
+
+    end
+
+    if Humanoid
+    and secondTool.Parent ==
+        Player.Backpack then
+
+        pcall(function()
+
+            Humanoid:EquipTool(
+                secondTool
+            )
+
+        end)
+
+        task.wait(0.05)
+
+    end
+
+    pcall(function()
+
+        secondTool:Activate()
+
+    end)
+
+    return true
+
+end
+
+--========================================================--
+-- 高速冲撞
+--========================================================--
+
+local Charging = false
+local ChargeConnection
+local ChargeAnimationTrack
+
+local function stopCharge()
+
+    Charging = false
+
+    if ChargeConnection then
+
+        ChargeConnection:Disconnect()
+        ChargeConnection = nil
+
+    end
+
+    if ChargeAnimationTrack then
+
+        pcall(function()
+            ChargeAnimationTrack:Stop()
+        end)
+
+        ChargeAnimationTrack = nil
+
+    end
+
+    if Root
+    and Root.Parent
+    and not IsAttached then
+
+        local current =
+            Root.AssemblyLinearVelocity
+
+        Root.AssemblyLinearVelocity =
+            Vector3.new(
+                0,
+                current.Y,
+                0
+            )
+
+    end
+
+end
+
+local function startCharge()
+
+    if Charging then
+        return
+    end
+
+    if IsAttached then
+        return
+    end
+
+    if not Character
+    or not Humanoid
+    or not Root then
+        return
+    end
+
+    if Humanoid.Health <= 0 then
+        return
+    end
+
+    Charging = true
+
+    local animation
+
+    animation,
+    ChargeAnimationTrack =
+        loadAnimation(
+            CHARGE_ANIMATION,
+            Enum.AnimationPriority.Action,
+            true
+        )
+
+    if ChargeAnimationTrack then
+
+        pcall(function()
+
+            ChargeAnimationTrack:Play()
+            ChargeAnimationTrack:AdjustSpeed(1)
+
+        end)
+
+    end
+
+    local elapsed = 0
+
+    ChargeConnection =
+        RunService.RenderStepped:Connect(
+            function(deltaTime)
+
+                if not Charging then
+                    return
+                end
+
+                if not Root
+                or not Root.Parent
+                or not Humanoid
+                or Humanoid.Health <= 0 then
+
+                    stopCharge()
+                    return
+
+                end
+
+                elapsed += deltaTime
+
+                local direction =
+                    getCameraDirection()
+
+                if not direction then
+                    return
+                end
+
+                Root.CFrame =
+                    CFrame.lookAt(
+                        Root.Position,
+                        Root.Position + direction
+                    )
+
+                Root.AssemblyLinearVelocity =
+                    direction * CHARGE_SPEED
+
+                --================================================--
+                -- 撞到人
+                --================================================--
+
+                local target =
+                    detectTarget()
+
+                if target then
+
+                    local hitTarget =
+                        target
+
+                    -- 立即停止
+                    stopCharge()
+
+                    -- 固定身后0.5秒
+                    attachBehindTarget(
+                        hitTarget,
+                        CHARGE_ATTACH_DURATION
+                    )
+
+                    -- 0.5秒后只触发二技能
+                    task.delay(
+                        CHARGE_ATTACH_DURATION,
+                        function()
+
+                            if not Humanoid
+                            or Humanoid.Health <= 0 then
+                                return
+                            end
+
+                            if hitTarget
+                            and hitTarget.Health > 0 then
+
+                                activateSecondTool()
+
+                            end
+
+                        end
+                    )
+
+                    return
+
+                end
+
+                -- 冲撞残影
+                if math.floor(elapsed * 25)
+                ~= math.floor(
+                    (elapsed - deltaTime) * 25
+                ) then
+
+                    createAfterImage()
+
+                end
+
+            end
+        )
+
+end
+
+--========================================================--
+-- 删除旧 Tool
+--========================================================--
+
+local function removeOldTool()
+
+    local Backpack =
+        Player:FindFirstChild("Backpack")
+
+    if Backpack then
+
+        local old =
+            Backpack:FindFirstChild(
+                "高速冲撞"
+            )
+
+        if old then
+            old:Destroy()
+        end
+
+    end
+
+    if Character then
+
+        local old =
+            Character:FindFirstChild(
+                "高速冲撞"
+            )
+
+        if old then
+            old:Destroy()
+        end
+
+    end
+
+end
+
+removeOldTool()
+
+--========================================================--
+-- 创建高速冲撞 Tool
+--========================================================--
+
+local Tool =
+    Instance.new("Tool")
+
+Tool.Name =
+    "高速冲撞"
+
+Tool.ToolTip =
+    "高速冲撞"
+
+Tool.RequiresHandle =
+    true
+
+Tool.CanBeDropped =
+    false
+
+local Handle =
+    Instance.new("Part")
+
+Handle.Name =
+    "Handle"
+
+Handle.Size =
+    Vector3.new(
+        1,
+        1,
+        1
+    )
+
+Handle.Transparency =
+    1
+
+Handle.CanCollide =
+    false
+
+Handle.CanTouch =
+    false
+
+Handle.CanQuery =
+    false
+
+Handle.Massless =
+    true
+
+Handle.Parent =
+    Tool
+
+Tool.Activated:Connect(function()
+
+    if not Charging then
+
+        startCharge()
+
+    end
+
+end)
+
+Tool.Unequipped:Connect(function()
+
+    if Charging then
+
+        stopCharge()
+
+    end
+
+end)
+
+Tool.Parent =
+    Player:WaitForChild(
+        "Backpack"
+    )
+
+--========================================================--
+-- 重生
+--========================================================--
+
+Player.CharacterAdded:Connect(
+    function(char)
+
+        setupCharacter(char)
+
+        task.wait(1)
+
+        setupMovement()
+        setupSecondSkillAnimation()
+        setupFirstSkill()
+        setupThirdSkill()
+
+        updateHotbar()
+
+    end
+)
+
+--========================================================--
+-- 初始
+--========================================================--
+
+setupMovement()
+
+setupSecondSkillAnimation()
+setupFirstSkill()
+setupThirdSkill()
+
+task.defer(function()
+
+    updateHotbar()
+
+end)
+
+--========================================================--
+-- 输出
+--========================================================--
+
+print("========================================")
+print(" Can't Stop! 完整修复版已加载")
+print("----------------------------------------")
+print("走路动画：18897115785")
+print("跑步动画：18897115785")
+print("走路速度：0.6x")
+print("跑步速度：0.6x")
+print("----------------------------------------")
+print("一技能抓取：76530443909428")
+print("二技能抓取：131820095363270")
+print("三技能使用：76530443909428")
+print("三技能抓取：76530443909428")
+print("----------------------------------------")
+print("高速冲撞：250")
+print("技能高速：500")
+print("目标固定：0.5秒")
+print("========================================")
