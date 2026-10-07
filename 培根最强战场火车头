@@ -24,6 +24,9 @@ local CHARGE_ATTACH_DURATION = 0.5
 
 local NEAREST_TARGET_DISTANCE = 30
 
+-- 高速冲撞检测范围
+local CHARGE_DETECT_DISTANCE = 15
+
 --========================================================--
 -- 动画 ID
 --========================================================--
@@ -52,8 +55,8 @@ local THIRD_SKILL_ANIMATION = 76530443909428
 -- 三技能抓到人
 local THIRD_SKILL_GRAB_ANIMATION = 76530443909428
 
--- 高速冲撞
-local CHARGE_ANIMATION = 18897115785
+-- 四技能 / 高速冲撞
+local CHARGE_ANIMATION = 13715326691
 
 --========================================================--
 -- 二技能 Tool
@@ -141,19 +144,6 @@ end
 
 --========================================================--
 -- 移动动画
---
--- 重点：
--- 1. WalkSpeed 16
--- 2. WalkSpeed 24
--- 3. WalkSpeed 25
--- 4. 更高速度
---
--- 全部使用：
--- 18897115785
--- 0.6x
---
--- 同时处理默认 Animate 的 walk/run
--- 防止跑步时被默认跑步动画覆盖
 --========================================================--
 
 local MovementAnimation
@@ -174,10 +164,6 @@ local function disableDefaultMovementAnimations()
     if not Animate then
         return
     end
-
-    --====================================================--
-    -- 禁用默认 walk/run 动画脚本控制
-    --====================================================--
 
     local walk =
         Animate:FindFirstChild("walk")
@@ -270,10 +256,6 @@ end
 
 local function setupMovement()
 
-    --====================================================--
-    -- 清理
-    --====================================================--
-
     if MovementRunningConnection then
 
         MovementRunningConnection:Disconnect()
@@ -293,9 +275,7 @@ local function setupMovement()
     if MovementTrack then
 
         pcall(function()
-
             MovementTrack:Stop()
-
         end)
 
         MovementTrack = nil
@@ -314,10 +294,6 @@ local function setupMovement()
         return
     end
 
-    --====================================================--
-    -- 设置 WalkSpeed
-    --====================================================--
-
     local originalSpeed =
         Humanoid.WalkSpeed
 
@@ -328,19 +304,11 @@ local function setupMovement()
     Humanoid.WalkSpeed =
         originalSpeed * 1.5
 
-    --====================================================--
-    -- 修改默认 Animate
-    --====================================================--
-
     task.defer(function()
 
         disableDefaultMovementAnimations()
 
     end)
-
-    --====================================================--
-    -- 创建自己的移动动画
-    --====================================================--
 
     MovementAnimation =
         Instance.new("Animation")
@@ -376,10 +344,6 @@ local function setupMovement()
     MovementTrack.Looped =
         true
 
-    --====================================================--
-    -- Running
-    --====================================================--
-
     MovementRunningConnection =
         Humanoid.Running:Connect(
             function(speed)
@@ -393,18 +357,8 @@ local function setupMovement()
                     return
                 end
 
-                -- 只判断有没有速度
-                --
-                -- 16 = 播放
-                -- 24 = 播放
-                -- 25 = 播放
-                -- 30 = 播放
-                --
-                -- 全部0.6x
-
                 if speed > 0.1 then
 
-                    -- 防止默认动画抢回来
                     stopDefaultMovementTracks()
 
                     if not MovementTrack.IsPlaying then
@@ -448,10 +402,6 @@ local function setupMovement()
             end
         )
 
-    --====================================================--
-    -- Heartbeat 保险
-    --====================================================--
-
     MovementHeartbeatConnection =
         RunService.Heartbeat:Connect(
             function()
@@ -471,7 +421,6 @@ local function setupMovement()
 
                 if moving then
 
-                    -- 持续阻止默认移动动画抢占
                     stopDefaultMovementTracks()
 
                     if not MovementTrack.IsPlaying then
@@ -752,7 +701,8 @@ local function detectTarget()
     local result =
         workspace:Raycast(
             Root.Position,
-            Root.CFrame.LookVector * 7,
+            Root.CFrame.LookVector
+            * CHARGE_DETECT_DISTANCE,
             params
         )
 
@@ -1341,7 +1291,6 @@ local function setupSecondSkillAnimation()
 
                         if target then
 
-                            -- 二技能抓到人
                             playSecondSkillGrabAnimation()
 
                         end
@@ -1504,7 +1453,6 @@ local function setupThirdSkill()
 
                 task.spawn(function()
 
-                    -- 三技能使用动画
                     playThirdSkillUseAnimation()
 
                     local target =
@@ -1512,7 +1460,6 @@ local function setupThirdSkill()
 
                     if target then
 
-                        -- 三技能抓到人
                         playThirdSkillGrabAnimation()
 
                     end
@@ -1578,57 +1525,17 @@ local function findSecondTool()
 end
 
 --========================================================--
--- 只触发二技能
---========================================================--
-
-local function activateSecondTool()
-
-    local secondTool =
-        findSecondTool()
-
-    if not secondTool then
-
-        warn(
-            "[Can't Stop!] 找不到二技能 Tool：列车突进"
-        )
-
-        return false
-
-    end
-
-    if Humanoid
-    and secondTool.Parent ==
-        Player.Backpack then
-
-        pcall(function()
-
-            Humanoid:EquipTool(
-                secondTool
-            )
-
-        end)
-
-        task.wait(0.05)
-
-    end
-
-    pcall(function()
-
-        secondTool:Activate()
-
-    end)
-
-    return true
-
-end
-
---========================================================--
 -- 高速冲撞
+--
+-- 注意：
+-- 撞到人后现在只停止并固定目标，
+-- 不再自动触发二技能。
 --========================================================--
 
 local Charging = false
 local ChargeConnection
 local ChargeAnimationTrack
+local ChargeAnimationObject
 
 local function stopCharge()
 
@@ -1648,6 +1555,16 @@ local function stopCharge()
         end)
 
         ChargeAnimationTrack = nil
+
+    end
+
+    if ChargeAnimationObject then
+
+        pcall(function()
+            ChargeAnimationObject:Destroy()
+        end)
+
+        ChargeAnimationObject = nil
 
     end
 
@@ -1691,9 +1608,7 @@ local function startCharge()
 
     Charging = true
 
-    local animation
-
-    animation,
+    ChargeAnimationObject,
     ChargeAnimationTrack =
         loadAnimation(
             CHARGE_ANIMATION,
@@ -1751,7 +1666,8 @@ local function startCharge()
                     direction * CHARGE_SPEED
 
                 --================================================--
-                -- 撞到人
+                -- 高速冲撞撞人检测
+                -- 检测距离已从 7 提高到 15
                 --================================================--
 
                 local target =
@@ -1762,34 +1678,23 @@ local function startCharge()
                     local hitTarget =
                         target
 
-                    -- 立即停止
+                    -- 立即停止冲撞
                     stopCharge()
 
-                    -- 固定身后0.5秒
+                    -- 固定在目标身后0.5秒
                     attachBehindTarget(
                         hitTarget,
                         CHARGE_ATTACH_DURATION
                     )
 
-                    -- 0.5秒后只触发二技能
-                    task.delay(
-                        CHARGE_ATTACH_DURATION,
-                        function()
-
-                            if not Humanoid
-                            or Humanoid.Health <= 0 then
-                                return
-                            end
-
-                            if hitTarget
-                            and hitTarget.Health > 0 then
-
-                                activateSecondTool()
-
-                            end
-
-                        end
-                    )
+                    --================================================--
+                    -- 注意：
+                    -- 这里已经删除原来的：
+                    --
+                    -- task.delay(... activateSecondTool())
+                    --
+                    -- 因此撞到人以后不会自动使用二技能。
+                    --================================================--
 
                     return
 
@@ -1978,7 +1883,10 @@ print("二技能抓取：131820095363270")
 print("三技能使用：76530443909428")
 print("三技能抓取：76530443909428")
 print("----------------------------------------")
+print("四技能/高速冲撞动画：13715326691")
 print("高速冲撞：250")
+print("冲撞检测距离：15")
 print("技能高速：500")
 print("目标固定：0.5秒")
+print("撞到人后：不自动使用二技能")
 print("========================================")
